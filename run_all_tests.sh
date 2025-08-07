@@ -1,0 +1,204 @@
+#!/bin/bash
+
+# 确保脚本在出现错误时立即退出，并且未定义的变量会报错
+set -euo pipefail
+
+# --- 全局变量和配置 ---
+TOTAL_SUITES_FAILED=0
+FAILED_SUITES=()
+BUILD_DIR="build"
+# 失败详情文件的名称
+UTILS_FAIL_LOG="failed_utils_details.txt"
+AST_FAIL_LOG="failed_ast_details.txt"
+FRONTEND_FAIL_LOG="failed_frontend_details.txt"
+
+# --- 辅助函数 ---
+
+# 打印带有颜色的标题
+print_header() {
+    local title="$1"
+    echo
+    echo "============================================================"
+    echo "  ${title}"
+    echo "============================================================"
+    echo
+}
+
+# 暂停并等待用户确认的函数
+wait_for_user_confirmation() {
+    echo
+    read -r -p "Type 'quit' to exit, or press Enter to continue... " user_input
+    if [[ "${user_input,,}" == "quit" ]]; then
+        echo "User requested to quit. Aborting test run."
+        print_header "INTERIM TEST SUMMARY"
+        if [ $TOTAL_SUITES_FAILED -eq 0 ]; then
+            echo -e "\n\033[33m- No test suites failed so far.\033[0m"
+        else
+            echo -e "\n\033[1;31m- Failed suites so far: ${TOTAL_SUITES_FAILED}\033[0m"
+        fi
+        echo "Build artifacts are preserved for inspection."
+        exit 1
+    fi
+    echo
+}
+
+# 函数：运行一个测试套件并报告结果
+run_test_suite() {
+    local suite_name="$1"
+    local test_function="$2"
+    local should_wait="${3:-}"
+    
+    print_header "RUNNING: ${suite_name} Test Suite"
+    
+    if ${test_function}; then
+        echo -e "\n[\033[32m✔\033[0m] ${suite_name} Test Suite: PASSED"
+    else
+        echo -e "\n[\033[1;31m✖\033[0m] ${suite_name} Test Suite: FAILED"
+        TOTAL_SUITES_FAILED=$((TOTAL_SUITES_FAILED + 1))
+        FAILED_SUITES+=("${suite_name}")
+    fi
+    
+    if [ "${should_wait}" == "wait" ]; then
+        wait_for_user_confirmation
+    fi
+    
+    echo "------------------------------------------------------------"
+}
+
+# --- 测试函数定义 ---
+test_compiler_utilities() {
+    echo "--- Compiling and running utility tests ---"
+    rm -f "${UTILS_FAIL_LOG}"
+    mkdir -p "${BUILD_DIR}"
+    
+    local test_src="test/test_location_error_logger.c"
+    local utils_src="src/utils/logger.c src/utils/error.c"
+    local out_file="${BUILD_DIR}/utils_runner"
+    
+    if [ ! -f "$test_src" ]; then
+        echo "Error: Utility test file not found at ${test_src}"; return 1;
+    fi
+    
+    # 编译时不加 -DFORCE_COLOR_OUTPUT，让C程序自动检测环境
+    gcc -o "${out_file}" "${test_src}" ${utils_src} -Iinclude -Wall -Wextra -std=c11
+    if [ $? -ne 0 ]; then
+        echo "Compilation failed."; return 1;
+    fi
+
+    # 直接在终端运行，此时 isatty() 为 true，输出为彩色
+    if ! ./"${out_file}"; then
+        echo "Utility tests failed. Capturing plain text output to ${UTILS_FAIL_LOG}..."
+        # 如果失败，重新运行并重定向输出，此时 isatty() 为 false，输出为纯文本
+        ./"${out_file}" > "${UTILS_FAIL_LOG}" 2>&1
+        return 1
+    fi
+    
+    return 0
+}
+
+test_ast_module() {
+    echo "--- Compiling and running AST tests ---"
+    rm -f "${AST_FAIL_LOG}"
+    mkdir -p "${BUILD_DIR}"
+    
+    local src_files="src/ast/ast.c src/utils/error.c src/symbol_table/symbol_table.c src/utils/logger.c"
+    local test_suites=("ast_test_suite" "ast_edge_cases" "ast_validation")
+    local overall_result=0
+    
+    for suite in "${test_suites[@]}"; do
+        local test_file="test/${suite}.c"
+        local out_file="${BUILD_DIR}/${suite}"
+        
+        echo "Compiling ${suite}..."
+        if [ ! -f "$test_file" ]; then
+            echo "Error: AST test file not found at ${test_file}"
+            echo "==== ERROR: Missing test file ${test_file} ====" >> "${AST_FAIL_LOG}"
+            overall_result=1; continue;
+        fi
+        
+        gcc -g -Wall -Wextra -Iinclude -o "${out_file}" "${test_file}" ${src_files} -lm
+        
+        echo "Running ${suite}..."
+        if ! ./"${out_file}"; then
+            echo "✗ ${suite} failed"
+            echo "==== FAILED SUITE: ${suite} ====" >> "${AST_FAIL_LOG}"
+            ./"${out_file}" >> "${AST_FAIL_LOG}" 2>&1; echo "" >> "${AST_FAIL_LOG}"
+            overall_result=1
+        else
+            echo "✓ ${suite} passed"
+        fi; echo "--------------------";
+    done
+    
+    if [ ${overall_result} -eq 0 ]; then rm -f "${AST_FAIL_LOG}"; fi
+    return ${overall_result}
+}
+
+test_compiler_frontend() {
+    echo "--- Building project with CMake and running frontend tests ---"
+    rm -f "${FRONTEND_FAIL_LOG}"
+    
+    # 使用 CMake 构建项目 (生成 lexer/parser)
+    mkdir -p "${BUILD_DIR}"; cd "${BUILD_DIR}"; cmake ..; make || true
+    
+    local lexer_gen="generated/lexer.yy.c"; local parser_gen="generated/parser.tab.c"
+    if [ ! -f "$lexer_gen" ] || [ ! -f "$parser_gen" ]; then
+        echo -e "\n\033[1;31mFATAL ERROR:\033[0m Essential frontend files not generated by 'make'."
+        echo "FATAL: Failed to generate $lexer_gen or $parser_gen" > "../${FRONTEND_FAIL_LOG}"; cd ..; return 1;
+    fi
+    cd ..
+
+    echo "Compiling dedicated test executable for the frontend..."
+    local out_executable="frontend_test_runner"
+    local src_files=("${BUILD_DIR}/${lexer_gen}" "${BUILD_DIR}/${parser_gen}" src/ast/ast.c 
+        src/scanner/scanner_context.c src/utils/error.c src/utils/logger.c 
+        src/symbol_table/symbol_table.c src/semantic_analyzer/semantic_analyzer.c src/parser/parser_driver.c)
+    local include_dirs="-I${BUILD_DIR}/generated -Iinclude"
+    gcc -o "${out_executable}" "${src_files[@]}" ${include_dirs} || return 1
+    
+    echo "Running test cases..."; local test_root="test/cases/公开样例与运行时库"
+    local sy_files; sy_files=$(find "${test_root}" -type f -name "*.sy"); local pass=0; local fail=0
+    
+    for case in ${sy_files}; do
+        echo -n "Testing $case ... ";
+        if ./"${out_executable}" "$case" &> /dev/null; then echo "[PASS]"; ((pass++));
+        else
+            local exit_code=$?; echo "[FAIL] (Exit code: ${exit_code})"; ((fail++));
+            echo "==== FAILED CASE: $case ====" >> "${FRONTEND_FAIL_LOG}"
+            ./"${out_executable}" "$case" >> "${FRONTEND_FAIL_LOG}" 2>&1; echo >> "${FRONTEND_FAIL_LOG}";
+        fi;
+    done
+    
+    echo "Frontend Test Summary: $pass passed, $fail failed."
+    if [ $fail -ne 0 ]; then echo "Failed cases logged in ${FRONTEND_FAIL_LOG}"; return 1; fi
+    rm -f "${FRONTEND_FAIL_LOG}"; return 0;
+}
+
+# --- 主执行流程 ---
+echo "Initializing test environment..."
+rm -f "${UTILS_FAIL_LOG}" "${AST_FAIL_LOG}" "${FRONTEND_FAIL_LOG}"
+
+run_test_suite "Compiler Utilities"   test_compiler_utilities   "wait"
+run_test_suite "AST Module"           test_ast_module           "wait"
+run_test_suite "Compiler Frontend"    test_compiler_frontend    "wait"
+
+# --- 最终总结报告 ---
+print_header "OVERALL TEST SUMMARY"
+if [ $TOTAL_SUITES_FAILED -eq 0 ]; then
+    echo -e "\n\033[32m🎉 ALL TEST SUITES PASSED! Congratulations!\033[0m"
+    echo "Cleaning up script-generated temporary artifacts..."
+    rm -f "${BUILD_DIR}/utils_runner"
+    rm -f "${BUILD_DIR}/ast_test_suite" "${BUILD_DIR}/ast_edge_cases" "${BUILD_DIR}/ast_validation"
+    rm -f "frontend_test_runner"
+    echo "Cleanup complete. The '${BUILD_DIR}' directory is preserved for CMake artifacts."
+    exit 0
+else
+    echo -e "\n\033[1;31m❌ Total failed suites: ${TOTAL_SUITES_FAILED}\033[0m"
+    echo "The following test suites failed:";
+    for suite in "${FAILED_SUITES[@]}"; do echo -e "  - \033[1;31m${suite}\033[0m"; done; echo
+    echo "Please review the detailed failure logs:"
+    [ -f "${UTILS_FAIL_LOG}" ] && echo "  - ${UTILS_FAIL_LOG}"
+    [ -f "${AST_FAIL_LOG}" ] && echo "  - ${AST_FAIL_LOG}"
+    [ -f "${FRONTEND_FAIL_LOG}" ] && echo "  - ${FRONTEND_FAIL_LOG}"
+    echo "Build artifacts are preserved for inspection."
+    exit 1
+fi

@@ -1,0 +1,7 @@
+# 忽略比赛官方提供的文件夹和所有测试用例
+compiler2022-master/
+test/
+docs/
+build/
+# 缓存文件
+.cache/

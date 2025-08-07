@@ -1,0 +1,90 @@
+// test.sy
+// A comprehensive test file for the SysY compiler.
+// It covers various language features including control flow, functions,
+// arrays, operators, and standard library I/O.
+const int SIZE = 5;
+const float PI = 3.14;
+int global_var = 100;
+// A function to demonstrate array parameters and a simple loop.
+void print_array(int n, int arr[]) {
+putf("Printing array of size %d:\n", n);
+int i = 0;
+while (i < n) {
+putint(arr[i]);
+putch(32); // Print a space
+i = i + 1;
+}
+putch(10);
+}
+// A recursive function to calculate factorial.
+int factorial(int n) {
+if (n <= 1) {
+return 1;
+}
+return n * factorial(n - 1);
+}
+int main() {
+putf("--- SysY Compiler Test Program ---\n\n");
+// --- 1. Basic variables and constants ---
+int a = 10;
+const int b = 20;
+float c = 2.5;
+putf("1. Basic values: a=%d, b=%d, c=%f\n", a, b, c);
+
+// --- 2. Arithmetic and relational operators ---
+int result = (a + b) * 2; // (10 + 20) * 2 = 60
+putf("2. Expression (a+b)*2 = %d (expected 60)\n", result);
+if (result > 50 && result == 60) {
+    putf("   Condition (result > 50 && result == 60) is true.\n");
+} else {
+    putf("   Condition is false. (Error)\n");
+}
+
+// --- 3. Function calls ---
+int fact_5 = factorial(5); // 5! = 120
+putf("3. Recursive factorial(5) = %d (expected 120)\n\n", fact_5);
+
+// --- 4. Arrays ---
+putf("4. Array test:\n");
+int local_arr[SIZE];
+int i = 0;
+
+// Initialize array
+while (i < SIZE) {
+    local_arr[i] = (i + 1) * 11;
+    i = i + 1;
+}
+
+// Pass array to a function
+print_array(SIZE, local_arr);
+putch(10);
+
+// --- 5. Loop with break and continue ---
+putf("5. Loop with break/continue (printing even nums from 2 to 8):\n");
+i = 0;
+while (1) { // Infinite loop requires a break
+    i = i + 1;
+    if (i >= 10) {
+        break;
+    }
+    if (i % 2 == 1) {
+        continue; // Skip odd numbers
+    }
+    putint(i);
+    putch(32); // Space
+}
+putch(10);
+putch(10);
+
+// --- 6. Float operations ---
+float f_res = PI * c; // 3.14 * 2.5 = 7.85
+putf("6. Float test: %f * %f = %f (expected 7.85)\n", PI, c, f_res);
+
+// --- 7. Global variable modification ---
+global_var = global_var + fact_5; // 100 + 120 = 220
+putf("7. Global variable updated: %d (expected 220)\n", global_var);
+
+putf("\n--- Test Program Finished ---\n");
+
+return 0;
+}
