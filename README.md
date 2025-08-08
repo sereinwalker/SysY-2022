@@ -3,8 +3,8 @@
 ## 目录
 1. [概述](#概述)
 2. [项目结构](#项目结构)
-3. [词法分析器 (Lexer)](#词法分析器-lexer)
-4. [语法分析器 (Parser)](#语法分析器-parser)
+3. [扫描器上下文 (Scanner Context)](#扫描器上下文-scanner-context)
+4. [词法分析器 (Lexer)](#词法分析器-lexer)
 5. [语义分析器 (Semantic Analyzer)](#语义分析器-semantic-analyzer)
 6. [抽象语法树 (AST)](#抽象语法树-ast)
 7. [符号表管理](#符号表管理)
@@ -12,14 +12,11 @@
 9. [编译流程](#编译流程)
 10. [技术特点](#技术特点)
 
-## 概述
+## 1. 概述
 
-本项目是一个完整的 SysY 语言编译器前端实现，采用经典的三阶段设计：
-- **词法分析** (Lexical Analysis)：将源代码转换为词法单元流
-- **语法分析** (Syntax Analysis)：构建抽象语法树 (AST)
-- **语义分析** (Semantic Analysis)：类型检查、符号解析和语义验证
+本文档详细介绍了本 SysY 编译器的前端部分。前端负责将 SysY 源代码作为输入，经过一系列处理，最终生成一种中间表示（通常是抽象语法树 AST），并附带丰富的语义信息。这个过程为后续的后端（代码优化和目标代码生成）奠定了坚实的基础。
 
-编译器前端负责将 SysY 源代码转换为中间表示，为后续的代码生成和优化阶段提供基础。
+本编译器前端主要由以下几个核心模块构成：
 
 ## 项目结构
 
@@ -37,6 +34,22 @@ src/
 ├── scanner/            # 扫描器上下文
 └── utils/              # 工具函数
 ```
+
+## 扫描器上下文 (Scanner Context)
+
+### 文件位置
+- `src/scanner/scanner_context.h`
+- `src/scanner/scanner_context.c`
+
+### 功能概述
+`ScannerContext` 是连接词法分析器、语法分析器和语义分析器的核心“胶水”组件。它并非一个独立的编译阶段，而是一个贯穿整个前端生命周期的**上下文管理器**，旨在支持一个可重入的、线程安全的编译流程。
+
+### 主要职责
+
+1.  **中心状态管理**: 由编译器驱动程序创建，并作为参数传递给词法、语法和语义分析的各个阶段。它持有所有阶段所需的共享状态。
+2.  **核心资源容器**: 它内部封装并管理着 `ASTContext`，这意味着它间接掌管着**内存池**和**错误收集器**。所有模块都通过 `ScannerContext` 来访问这些核心资源。
+3.  **生命周期控制**: `create_scanner_context` 和 `destroy_scanner_context` 函数分别负责初始化和释放所有前端资源，确保了清晰的资源生命周期和无内存泄漏。
+4.  **词法分析支持**: 为词法分析器提供了状态存储，例如一个动态增长的缓冲区 (`string_buffer`)，用于在扫描过程中拼接字符串字面量。
 
 ## 词法分析器 (Lexer)
 
@@ -318,46 +331,22 @@ typedef enum {
 
 ## 编译流程
 
-### 1. 初始化阶段
-```c
-// 创建扫描器上下文
-ScannerContext* ctx = create_scanner_context();
-// 初始化词法分析器
-yylex_init(&scanner);
-yyset_extra(ctx, scanner);
-```
+编译器前端的工作流程以 `ScannerContext` 的生命周期为核心，串联起各个模块：
 
-### 2. 词法分析阶段
-- 读取源文件
-- 生成词法单元流
-- 处理注释和空白字符
-- 检测词法错误
+1.  **初始化**: 编译器驱动程序调用 `create_scanner_context(filename)` 创建一个 `ScannerContext` 实例。此函数会完成所有前端子系统的初始化，包括创建 `ASTContext`（进而创建内存池和错误收集器）。
 
-### 3. 语法分析阶段
-- 调用 Bison 解析器
-- 构建抽象语法树
-- 处理语法错误
-- 错误恢复和同步
+2.  **词法与语法分析**: 驱动程序初始化 `flex` 扫描器 (`yylex_init`) 和 `bison` 解析器，并将 `ScannerContext` 实例注入其中。随后调用 `yyparse(ctx)` 启动解析。
+    -   **词法分析器** (`lexer.l`) 在执行时，通过 `YY_CTX` 宏访问 `ScannerContext`，以使用其内部的字符串缓冲区等资源。
+    -   **语法分析器** (`parser.y`) 在归约产生式时，通过 `ctx` 参数访问 `ASTContext`，调用内存池中的工厂函数来构建**抽象语法树 (AST)**。
 
-### 4. 语义分析阶段
-```c
-void perform_semantic_analysis(ASTContext *ctx) {
-    AnalysisContext actx = {0};
-    actx.ast_ctx = ctx;
-    actx.current_scope = ctx->global_scope;
-    
-    // 第一遍：构建符号表
-    traverse_ast(ctx->root, build_symbols_pre, build_symbols_post, &actx);
-    
-    // 第二遍：语义检查
-    traverse_ast(ctx->root, check_semantics_pre, check_semantics_post, &actx);
-}
-```
+3.  **语义分析**: 语法分析成功后，驱动程序从 `ScannerContext` 中获取到完整的 AST，并调用 `perform_semantic_analysis`。
+    -   语义分析器对 AST 进行两遍遍历，通过传入的上下文访问符号表和类型系统，完成符号构建和类型检查。
 
-### 5. 输出阶段
-- 生成中间代码
-- 输出错误报告
-- 清理资源
+4.  **资源清理与报告**: 
+    -   无论编译成功与否，驱动程序最后都会调用 `destroy_scanner_context(ctx)`。该函数会按照创建的逆序，安全地释放内存池、错误列表、文件名副本等所有资源。
+    -   在清理前，可以从 `ScannerContext` 中提取错误信息并格式化输出给用户。
+
+5.  **交付成果**: 如果前端处理成功（没有致命错误），最终生成的、附带了完整语义信息的 AST 将被传递给编译器后端。
 
 ## 技术特点
 
